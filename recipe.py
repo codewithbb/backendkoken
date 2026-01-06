@@ -31,23 +31,36 @@ def get_all_public_recipes():
     return recipes
 
 
-def get_recipe_detail(recipe_id: int):
+def get_recipe_detail(recipe_id: int, current_user_id: int | None = None):
     conn = get_connection()
     cursor = conn.cursor()
 
-    # 1) Recept basis
-    cursor.execute("""
-        SELECT
-            id, owner_user_id, title, description,
-            servings, prep_time_minutes, cook_time_minutes,
-            cuisine, diet, difficulty, is_public,
-            voice_summary, source_type,
-            created_at, updated_at
-        FROM app.recipe
-        WHERE id = ? AND is_public = 1
-    """, (recipe_id,))
-    row = cursor.fetchone()
+    # Als niet ingelogd: alleen public
+    # Als wel ingelogd: public OF owner
+    if current_user_id is None:
+        cursor.execute("""
+            SELECT
+                id, owner_user_id, title, description,
+                servings, prep_time_minutes, cook_time_minutes,
+                cuisine, diet, difficulty, is_public,
+                voice_summary, source_type,
+                created_at, updated_at
+            FROM app.recipe
+            WHERE id = ? AND is_public = 1
+        """, (recipe_id,))
+    else:
+        cursor.execute("""
+            SELECT
+                id, owner_user_id, title, description,
+                servings, prep_time_minutes, cook_time_minutes,
+                cuisine, diet, difficulty, is_public,
+                voice_summary, source_type,
+                created_at, updated_at
+            FROM app.recipe
+            WHERE id = ? AND (is_public = 1 OR owner_user_id = ?)
+        """, (recipe_id, current_user_id))
 
+    row = cursor.fetchone()
     if row is None:
         conn.close()
         return None
@@ -55,19 +68,16 @@ def get_recipe_detail(recipe_id: int):
     columns = [c[0] for c in cursor.description]
     recipe = dict(zip(columns, row))
 
-    # 2) Ingrediënten
+    # ingredients
     cursor.execute("""
         SELECT line, sort_order
         FROM app.recipe_ingredient
         WHERE recipe_id = ?
         ORDER BY sort_order
     """, (recipe_id,))
-    recipe["ingredients"] = [
-        {"line": r[0], "sort_order": r[1]}
-        for r in cursor.fetchall()
-    ]
+    recipe["ingredients"] = [{"line": r[0], "sort_order": r[1]} for r in cursor.fetchall()]
 
-    # 3) Stappen
+    # steps
     cursor.execute("""
         SELECT step_number, instruction, skill_level, technique, can_be_spoken
         FROM app.recipe_step
@@ -170,3 +180,31 @@ def get_filter_options():
 
     conn.close()
     return {"cuisines": cuisines, "diets": diets, "tags": tags}
+
+def get_my_recipes(owner_user_id: int):
+    sql = """
+        SELECT
+            id,
+            title,
+            description,
+            servings,
+            prep_time_minutes,
+            cook_time_minutes,
+            cuisine,
+            diet,
+            difficulty,
+            is_public,
+            created_at,
+            updated_at
+        FROM app.recipe
+        WHERE owner_user_id = ?
+        ORDER BY updated_at DESC, created_at DESC
+    """
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(sql, (owner_user_id,))
+    cols = [c[0] for c in cur.description]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    conn.close()
+    return rows

@@ -3,9 +3,12 @@ from flask_cors import CORS
 from functools import wraps
 import os
 
-from recipe import get_public_recipes_filtered, get_recipe_detail, get_filter_options
+from recipe import get_public_recipes_filtered, get_recipe_detail, get_filter_options, get_my_recipes
 from auth_repository import create_user, verify_login, find_user_by_email
 from recipe_create_repository import create_recipe
+from recipe_owner import is_owner
+from recipe_update import update_recipe
+from recipe_delete import delete_recipe
 
 app = Flask(__name__)
 
@@ -43,7 +46,11 @@ def list_recipes():
 
 @app.get("/recipes/<int:recipe_id>")
 def recipe_detail(recipe_id: int):
-    recipe = get_recipe_detail(recipe_id)
+    current_user_id = session.get("user_id")  # None als niet ingelogd
+    if current_user_id is not None:
+        current_user_id = int(current_user_id)
+
+    recipe = get_recipe_detail(recipe_id, current_user_id=current_user_id)
     if recipe is None:
         return jsonify({"error": "Recipe not found"}), 404
     return jsonify(recipe)
@@ -129,6 +136,43 @@ def create_recipe_route():
         return jsonify({"success": False, "error": str(ve)}), 400
     except Exception as e:
         return jsonify({"success": False, "error": f"Server error: {e}"}), 500
+    
+@app.put("/recipes/<int:recipe_id>")
+@login_required
+def update_recipe_route(recipe_id: int):
+    user_id = int(session["user_id"])
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        # extra check (optioneel, update_recipe checkt ook in SQL)
+        if not is_owner(recipe_id, user_id):
+            return jsonify({"success": False, "error": "Not allowed"}), 403
+
+        update_recipe(recipe_id, user_id, payload)
+        return jsonify({"success": True}), 200
+
+    except ValueError as ve:
+        return jsonify({"success": False, "error": str(ve)}), 400
+    except PermissionError as pe:
+        return jsonify({"success": False, "error": str(pe)}), 403
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Server error: {e}"}), 500
+
+
+@app.delete("/recipes/<int:recipe_id>")
+@login_required
+def delete_recipe_route(recipe_id: int):
+    user_id = int(session["user_id"])
+    ok = delete_recipe(recipe_id, user_id)
+    if not ok:
+        return jsonify({"success": False, "error": "Not allowed or not found"}), 403
+    return jsonify({"success": True}), 200
+
+@app.get("/my/recipes")
+@login_required
+def my_recipes():
+    user_id = int(session["user_id"])
+    return jsonify(get_my_recipes(user_id))
 
 if __name__ == "__main__":
     app.run(debug=True)
