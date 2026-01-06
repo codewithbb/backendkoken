@@ -2,3 +2,5 @@ pyodbc
 python-dotenv
 flask
 flask-cors
+hashlib
+os
