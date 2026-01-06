@@ -1,13 +1,9 @@
 from connection_with_db import get_connection
 
 def update_recipe(recipe_id: int, owner_user_id: int, payload: dict) -> None:
-    """
-    Update recept + ingredients + steps + tags in 1 transaction.
-    Simpele strategie: update basisinfo, delete children, re-insert.
-    """
-
     title = (payload.get("title") or "").strip()
     description = (payload.get("description") or "").strip()
+    image_url = (payload.get("image_url") or "").strip() or None
 
     if not title or not description:
         raise ValueError("title en description zijn verplicht")
@@ -38,12 +34,13 @@ def update_recipe(recipe_id: int, owner_user_id: int, payload: dict) -> None:
     try:
         cur.execute("BEGIN TRANSACTION")
 
-        # 1) Update recipe basisinfo (ownership nogmaals afdwingen in SQL)
+        # ✅ image_url param staat nu correct in params (3e)
         cur.execute("""
             UPDATE app.recipe
             SET
               title = ?,
               description = ?,
+              image_url = ?,
               servings = ?,
               prep_time_minutes = ?,
               cook_time_minutes = ?,
@@ -56,22 +53,30 @@ def update_recipe(recipe_id: int, owner_user_id: int, payload: dict) -> None:
               updated_at = SYSUTCDATETIME()
             WHERE id = ? AND owner_user_id = ?
         """, (
-            title, description, servings, prep, cook,
-            cuisine, diet, difficulty,
+            title,
+            description,
+            image_url,
+            servings,
+            prep,
+            cook,
+            cuisine,
+            diet,
+            difficulty,
             1 if is_public else 0,
-            voice_summary, source_type,
-            recipe_id, owner_user_id
+            voice_summary,
+            source_type,
+            recipe_id,
+            owner_user_id
         ))
 
         if cur.rowcount == 0:
             raise PermissionError("Not allowed (not owner or recipe not found)")
 
-        # 2) Replace ingredients/steps/tags
+        # Replace ingredients/steps/tags
         cur.execute("DELETE FROM app.recipe_ingredient WHERE recipe_id = ?", (recipe_id,))
         cur.execute("DELETE FROM app.recipe_step WHERE recipe_id = ?", (recipe_id,))
         cur.execute("DELETE FROM app.recipe_tag WHERE recipe_id = ?", (recipe_id,))
 
-        # Ingredients
         for idx, ing in enumerate(ingredients, start=1):
             if isinstance(ing, str):
                 line = ing.strip()
@@ -87,7 +92,6 @@ def update_recipe(recipe_id: int, owner_user_id: int, payload: dict) -> None:
                 VALUES (?, ?, ?)
             """, (recipe_id, line, sort_order))
 
-        # Steps
         for idx, st in enumerate(steps, start=1):
             if isinstance(st, str):
                 instruction = st.strip()
@@ -112,7 +116,6 @@ def update_recipe(recipe_id: int, owner_user_id: int, payload: dict) -> None:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (recipe_id, step_number, instruction, skill_level, technique, 1 if can_be_spoken else 0))
 
-        # Tags (upsert + link)
         for t in tags:
             name = (t or "").strip().lower()
             if not name:
@@ -126,9 +129,7 @@ def update_recipe(recipe_id: int, owner_user_id: int, payload: dict) -> None:
                 cur.execute("INSERT INTO app.tag (name) OUTPUT INSERTED.id VALUES (?)", (name,))
                 tag_id = cur.fetchone()[0]
 
-            cur.execute("""
-                INSERT INTO app.recipe_tag (recipe_id, tag_id) VALUES (?, ?)
-            """, (recipe_id, tag_id))
+            cur.execute("INSERT INTO app.recipe_tag (recipe_id, tag_id) VALUES (?, ?)", (recipe_id, tag_id))
 
         cur.execute("COMMIT")
         conn.commit()

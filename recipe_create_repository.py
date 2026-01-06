@@ -1,19 +1,9 @@
 from connection_with_db import get_connection
 
 def create_recipe(owner_user_id: int, payload: dict) -> int:
-    """
-    payload verwacht:
-    {
-      title, description, servings, prep_time_minutes, cook_time_minutes,
-      cuisine?, diet?, difficulty?, is_public?,
-      voice_summary?,
-      ingredients: [ "..." ] of [ {line, sort_order} ],
-      steps: [ "..." ] of [ {instruction, step_number, skill_level?, technique?, can_be_spoken?} ],
-      tags: [ "snel", "vegetarisch" ]
-    }
-    """
     title = (payload.get("title") or "").strip()
     description = (payload.get("description") or "").strip()
+    image_url = (payload.get("image_url") or "").strip() or None
 
     if not title or not description:
         raise ValueError("title en description zijn verplicht")
@@ -26,6 +16,7 @@ def create_recipe(owner_user_id: int, payload: dict) -> int:
     diet = payload.get("diet")
     difficulty = payload.get("difficulty")
     difficulty = int(difficulty) if difficulty not in (None, "",) else None
+
     is_public = bool(payload.get("is_public", True))
     voice_summary = payload.get("voice_summary")
     source_type = payload.get("source_type") or "manual"
@@ -41,24 +32,35 @@ def create_recipe(owner_user_id: int, payload: dict) -> int:
     cur = conn.cursor()
 
     try:
-        # TRANSACTION
         cur.execute("BEGIN TRANSACTION")
 
-        # 1) Recipe insert + id terugkrijgen
+        # ✅ correct aantal kolommen + correct aantal VALUES placeholders
         cur.execute("""
             INSERT INTO app.recipe
-              (owner_user_id, title, description, servings, prep_time_minutes, cook_time_minutes,
+              (owner_user_id, title, description, image_url,
+               servings, prep_time_minutes, cook_time_minutes,
                cuisine, diet, difficulty, is_public, voice_summary, source_type)
             OUTPUT INSERTED.id
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            owner_user_id, title, description, servings, prep, cook,
-            cuisine, diet, difficulty, 1 if is_public else 0, voice_summary, source_type
+            owner_user_id,
+            title,
+            description,
+            image_url,
+            servings,
+            prep,
+            cook,
+            cuisine,
+            diet,
+            difficulty,
+            1 if is_public else 0,
+            voice_summary,
+            source_type
         ))
 
         recipe_id = cur.fetchone()[0]
 
-        # 2) Ingredients
+        # Ingredients
         for idx, ing in enumerate(ingredients, start=1):
             if isinstance(ing, str):
                 line = ing.strip()
@@ -75,7 +77,7 @@ def create_recipe(owner_user_id: int, payload: dict) -> int:
                 VALUES (?, ?, ?)
             """, (recipe_id, line, sort_order))
 
-        # 3) Steps
+        # Steps
         for idx, st in enumerate(steps, start=1):
             if isinstance(st, str):
                 instruction = st.strip()
@@ -100,13 +102,12 @@ def create_recipe(owner_user_id: int, payload: dict) -> int:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (recipe_id, step_number, instruction, skill_level, technique, 1 if can_be_spoken else 0))
 
-        # 4) Tags: maak tags aan indien nodig, koppel in recipe_tag
+        # Tags upsert + link
         for t in tags:
             name = (t or "").strip().lower()
             if not name:
                 continue
 
-            # upsert tag (SQL Server friendly)
             cur.execute("SELECT id FROM app.tag WHERE name = ?", (name,))
             row = cur.fetchone()
             if row:
@@ -115,7 +116,6 @@ def create_recipe(owner_user_id: int, payload: dict) -> int:
                 cur.execute("INSERT INTO app.tag (name) OUTPUT INSERTED.id VALUES (?)", (name,))
                 tag_id = cur.fetchone()[0]
 
-            # koppel (als al bestaat, overslaan)
             cur.execute("""
                 IF NOT EXISTS (
                   SELECT 1 FROM app.recipe_tag WHERE recipe_id = ? AND tag_id = ?

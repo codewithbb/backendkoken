@@ -6,6 +6,7 @@ def get_all_public_recipes():
             id,
             title,
             description,
+            image_url,
             servings,
             prep_time_minutes,
             cook_time_minutes,
@@ -16,16 +17,12 @@ def get_all_public_recipes():
         WHERE is_public = 1
         ORDER BY created_at DESC
     """
-
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(sql)
 
     columns = [column[0] for column in cursor.description]
-    recipes = []
-
-    for row in cursor.fetchall():
-        recipes.append(dict(zip(columns, row)))
+    recipes = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     conn.close()
     return recipes
@@ -35,12 +32,11 @@ def get_recipe_detail(recipe_id: int, current_user_id: int | None = None):
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Als niet ingelogd: alleen public
-    # Als wel ingelogd: public OF owner
     if current_user_id is None:
         cursor.execute("""
             SELECT
                 id, owner_user_id, title, description,
+                image_url,
                 servings, prep_time_minutes, cook_time_minutes,
                 cuisine, diet, difficulty, is_public,
                 voice_summary, source_type,
@@ -52,6 +48,7 @@ def get_recipe_detail(recipe_id: int, current_user_id: int | None = None):
         cursor.execute("""
             SELECT
                 id, owner_user_id, title, description,
+                image_url,
                 servings, prep_time_minutes, cook_time_minutes,
                 cuisine, diet, difficulty, is_public,
                 voice_summary, source_type,
@@ -68,7 +65,6 @@ def get_recipe_detail(recipe_id: int, current_user_id: int | None = None):
     columns = [c[0] for c in cursor.description]
     recipe = dict(zip(columns, row))
 
-    # ingredients
     cursor.execute("""
         SELECT line, sort_order
         FROM app.recipe_ingredient
@@ -77,7 +73,6 @@ def get_recipe_detail(recipe_id: int, current_user_id: int | None = None):
     """, (recipe_id,))
     recipe["ingredients"] = [{"line": r[0], "sort_order": r[1]} for r in cursor.fetchall()]
 
-    # steps
     cursor.execute("""
         SELECT step_number, instruction, skill_level, technique, can_be_spoken
         FROM app.recipe_step
@@ -95,8 +90,19 @@ def get_recipe_detail(recipe_id: int, current_user_id: int | None = None):
         for r in cursor.fetchall()
     ]
 
+    # ✅ tags (handig voor edit)
+    cursor.execute("""
+        SELECT t.name
+        FROM app.recipe_tag rt
+        JOIN app.tag t ON t.id = rt.tag_id
+        WHERE rt.recipe_id = ?
+        ORDER BY t.name
+    """, (recipe_id,))
+    recipe["tags"] = [r[0] for r in cursor.fetchall()]
+
     conn.close()
     return recipe
+
 
 def get_public_recipes_filtered(q=None, cuisine=None, diet=None, difficulty=None, tag=None):
     base_sql = """
@@ -104,6 +110,7 @@ def get_public_recipes_filtered(q=None, cuisine=None, diet=None, difficulty=None
             r.id,
             r.title,
             r.description,
+            r.image_url,
             r.servings,
             r.prep_time_minutes,
             r.cook_time_minutes,
@@ -117,13 +124,11 @@ def get_public_recipes_filtered(q=None, cuisine=None, diet=None, difficulty=None
     params = []
     where_parts = []
 
-    # Zoeken (q) in title/description (en evt voice_summary)
     if q:
         where_parts.append("(r.title LIKE ? OR r.description LIKE ? OR r.voice_summary LIKE ?)")
         like = f"%{q}%"
         params.extend([like, like, like])
 
-    # Exacte filters
     if cuisine:
         where_parts.append("r.cuisine = ?")
         params.append(cuisine)
@@ -132,12 +137,10 @@ def get_public_recipes_filtered(q=None, cuisine=None, diet=None, difficulty=None
         where_parts.append("r.diet = ?")
         params.append(diet)
 
-    # difficulty (exact) – later kun je ook min/max doen
-    if difficulty is not None:
+    if difficulty not in (None, ""):
         where_parts.append("r.difficulty = ?")
         params.append(int(difficulty))
 
-    # Tag filter (1 tag) via EXISTS
     if tag:
         where_parts.append("""
             EXISTS (
@@ -149,7 +152,6 @@ def get_public_recipes_filtered(q=None, cuisine=None, diet=None, difficulty=None
         """)
         params.append(tag)
 
-    # Voeg extra WHERE’s toe
     if where_parts:
         base_sql += " AND " + " AND ".join(where_parts)
 
@@ -164,6 +166,7 @@ def get_public_recipes_filtered(q=None, cuisine=None, diet=None, difficulty=None
 
     conn.close()
     return rows
+
 
 def get_filter_options():
     conn = get_connection()
@@ -181,12 +184,14 @@ def get_filter_options():
     conn.close()
     return {"cuisines": cuisines, "diets": diets, "tags": tags}
 
+
 def get_my_recipes(owner_user_id: int):
     sql = """
         SELECT
             id,
             title,
             description,
+            image_url,
             servings,
             prep_time_minutes,
             cook_time_minutes,
